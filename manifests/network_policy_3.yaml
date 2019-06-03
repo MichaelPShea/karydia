@@ -1,0 +1,16 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  labels:
+    app: karydia
+  name: network-policy-3
+  namespace: default
+spec:
+  podSelector: {} # Block access to Internet
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          project: default # block all communication between pods of different namespaces

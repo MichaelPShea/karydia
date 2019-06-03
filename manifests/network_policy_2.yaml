@@ -1,0 +1,27 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  labels:
+    app: karydia
+  name: network-policy-2
+  namespace: default
+spec:
+  podSelector: {} # Block access to Internet
+  policyTypes:
+  - Egress
+  egress:
+  # Block access to kube-system namespace by
+  # allowing only necessary traffic (explicit cluster internal DNS lookups)
+  - ports:
+    - port: 8053
+      protocol: UDP
+    - port: 8053
+      protocol: TCP
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+    to:
+    - namespaceSelector:
+        matchLabels:
+          role: kube-system
