@@ -366,6 +366,9 @@ func (reconciler *NetworkpolicyReconciler) enqueueNamespace(obj interface{}) {
 func (reconciler *NetworkpolicyReconciler) reconcileIsNeeded(actualPolicy *v1.NetworkPolicy, networkpolicyName string) bool {
 
 	desiredPolicy := reconciler.defaultNetworkPolicies[networkpolicyName].DeepCopy()
+	if len(desiredPolicy.Spec.Egress) > 0 && len(desiredPolicy.Spec.Egress[0].To) > 0 {
+		desiredPolicy.Spec.Egress[0].To[0].NamespaceSelector.MatchLabels["project"] = actualPolicy.GetNamespace()
+	}
 	actualSpec, _ := actualPolicy.Spec.Marshal()
 	desiredSpec, _ := desiredPolicy.Spec.Marshal()
 	if bytes.Equal(actualSpec, desiredSpec) {
@@ -410,6 +413,9 @@ func (reconciler *NetworkpolicyReconciler) createDefaultNetworkPolicy(namespace 
 	desiredPolicy.ObjectMeta.SetAnnotations(annotations)
 
 	reconciler.log.Infof("Deep copy of network policy with name '%s'", desiredPolicy.GetName())
+	if len(desiredPolicy.Spec.Egress) > 0 && len(desiredPolicy.Spec.Egress[0].To) > 0 {
+		desiredPolicy.Spec.Egress[0].To[0].NamespaceSelector.MatchLabels["project"] = namespace
+	}
 	if _, err := reconciler.kubeclientset.NetworkingV1().NetworkPolicies(namespace).Create(desiredPolicy); err != nil {
 		reconciler.log.Errorf("Network policy creation failed. Name specified: '%s'; Actual name: '%s'", networkpolicyName, desiredPolicy.GetName())
 		return err

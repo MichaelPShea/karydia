@@ -17,14 +17,17 @@
 package e2e
 
 import (
+	"fmt"
 	"os/exec"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
 const (
@@ -62,21 +65,10 @@ func execCommandAssertExitCode(t *testing.T, command string, expectedExitCode in
 	}
 }
 
-func TestNetworkPolicyLevel1(t *testing.T) {
-
-	var namespace *corev1.Namespace
-	var err error
-
-	namespace, err = f.CreateTestNamespace()
-	if err != nil {
-		t.Fatal("failed to create test namespace:", err)
-	}
-
-	ns := namespace.ObjectMeta.Name
-
-	pod := &corev1.Pod{
+func getPodDescription(ns string, podName string) *corev1.Pod {
+	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "karydia-network-policy-1",
+			Name:      podName,
 			Namespace: ns,
 		},
 		Spec: corev1.PodSpec{
@@ -89,67 +81,269 @@ func TestNetworkPolicyLevel1(t *testing.T) {
 			},
 		},
 	}
+}
+
+func networkPolicyTestCases(t *testing.T, podName string, ns string, level int) {
+
+	// Host Network (AWS only)
+	cmd1 := "kubectl exec --namespace=" + ns + " " + podName + " -- wget --spider --timeout 1 10.250.0.0"
+	execCommandAssertExitCode(t, cmd1, TimeOut)
+
+	cmd2 := "kubectl exec --namespace=" + ns + " " + podName + " -- wget --spider --timeout 1 10.250.1.1"
+	execCommandAssertExitCode(t, cmd2, TimeOut)
+
+	cmd3 := "kubectl exec --namespace=" + ns + " " + podName + " -- wget --spider --timeout 1 10.250.50.200"
+	execCommandAssertExitCode(t, cmd3, TimeOut)
+
+	// Meta Data Services (AWS, GCP, Azure)
+	cmd4 := "kubectl exec --namespace=" + ns + " " + podName + " -- wget --spider --timeout 1 169.254.169.254"
+	execCommandAssertExitCode(t, cmd4, TimeOut)
+
+	cmd5 := "kubectl exec --namespace=" + ns + " " + podName + " -- wget --spider --timeout 1 169.254.0.0"
+	execCommandAssertExitCode(t, cmd5, TimeOut)
+
+	cmd6 := "kubectl exec --namespace=" + ns + " " + podName + " -- wget --spider --timeout 1 169.254.2.2"
+	execCommandAssertExitCode(t, cmd6, TimeOut)
+
+	// Meta Data Services (Alibaba Cloud)
+	cmd7 := "kubectl exec --namespace=" + ns + " " + podName + " -- wget --spider --timeout 1 100.100.0.0"
+	execCommandAssertExitCode(t, cmd7, TimeOut)
+
+	cmd8 := "kubectl exec --namespace=" + ns + " " + podName + " -- wget --spider --timeout 1 100.100.1.3"
+	execCommandAssertExitCode(t, cmd8, TimeOut)
+
+	cmd9 := "kubectl exec --namespace=" + ns + " " + podName + " -- wget --spider --timeout 1 100.100.60.155"
+	execCommandAssertExitCode(t, cmd9, TimeOut)
+
+	expectedExitCode := Success
+	if level == 2 || level == 3 {
+		expectedExitCode = TimeOut
+	}
+
+	// External traffic with static IPs
+	// Google DNS
+	cmd10 := "kubectl exec --namespace=" + ns + " " + podName + " -- wget --spider --timeout 1 https://8.8.8.8"
+	execCommandAssertExitCode(t, cmd10, expectedExitCode)
+
+	// Cloudflare DNS
+	cmd11 := "kubectl exec --namespace=" + ns + " " + podName + " -- wget --spider --timeout 1 1.1.1.1"
+	execCommandAssertExitCode(t, cmd11, expectedExitCode)
+
+	// External traffic with domain names
+	cmd12 := "kubectl exec --namespace=" + ns + " " + podName + " -- wget --spider --timeout 1 www.google.de"
+	execCommandAssertExitCode(t, cmd12, expectedExitCode)
+
+	cmd13 := "kubectl exec --namespace=" + ns + " " + podName + " -- wget --spider --timeout 1 www.sap.com"
+	execCommandAssertExitCode(t, cmd13, expectedExitCode)
+}
+
+func testNetworkPolicyLevel(t *testing.T, podName string, level int) {
+
+	var namespace *corev1.Namespace
+	var err error
+
+	namespace, err = f.CreateTestNamespace()
+	if err != nil {
+		t.Fatalf("failed to create test namespace: %v", err)
+	}
+	if level == 2 {
+		namespace.SetAnnotations(map[string]string{
+			"karydia.gardener.cloud/networkPolicy": "network-policy-l2",
+		})
+	} else if level == 3 {
+		namespace.SetAnnotations(map[string]string{
+			"karydia.gardener.cloud/networkPolicy": "network-policy-l3",
+		})
+	}
+	ns := namespace.ObjectMeta.Name
+
+	pod := getPodDescription(ns, podName)
 
 	createdPod, err := f.KubeClientset.CoreV1().Pods(ns).Create(pod)
 	if err != nil {
-		t.Fatal("Failed to create:", err.Error())
+		t.Fatalf("Failed to create: " + err.Error())
 	}
-	podName := createdPod.ObjectMeta.Name
 
 	timeout := 2 * time.Minute
 	if err := f.WaitPodRunning(ns, podName, timeout); err != nil {
-		t.Fatal("pod never reached state running")
+		t.Fatalf("pod never reached state running")
 	}
 
-	// host network (AWS only)
-	cmd1 := "kubectl exec --namespace=" + ns + " " + podName + " -- wget --spider --timeout 3 10.250.0.0"
-	execCommandAssertExitCode(t, cmd1, TimeOut)
-
-	cmd2 := "kubectl exec --namespace=" + ns + " " + podName + " -- wget --spider --timeout 3 10.250.1.1"
-	execCommandAssertExitCode(t, cmd2, TimeOut)
-
-	cmd3 := "kubectl exec --namespace=" + ns + " " + podName + " -- wget --spider --timeout 3 10.250.50.200"
-	execCommandAssertExitCode(t, cmd3, TimeOut)
-
-	// meta data services (AWS, GCP, Azure)
-	cmd4 := "kubectl exec --namespace=" + ns + " " + podName + " -- wget --spider --timeout 3 169.254.169.254"
-	execCommandAssertExitCode(t, cmd4, TimeOut)
-
-	cmd5 := "kubectl exec --namespace=" + ns + " " + podName + " -- wget --spider --timeout 3 169.254.0.0"
-	execCommandAssertExitCode(t, cmd5, TimeOut)
-
-	cmd6 := "kubectl exec --namespace=" + ns + " " + podName + " -- wget --spider --timeout 3 169.254.2.2"
-	execCommandAssertExitCode(t, cmd6, TimeOut)
-
-	// meta data services (Alibaba Cloud)
-	cmd7 := "kubectl exec --namespace=" + ns + " " + podName + " -- wget --spider --timeout 3 100.100.0.0"
-	execCommandAssertExitCode(t, cmd7, TimeOut)
-
-	cmd8 := "kubectl exec --namespace=" + ns + " " + podName + " -- wget --spider --timeout 3 100.100.1.3"
-	execCommandAssertExitCode(t, cmd8, TimeOut)
-
-	cmd9 := "kubectl exec --namespace=" + ns + " " + podName + " -- wget --spider --timeout 3 100.100.60.155"
-	execCommandAssertExitCode(t, cmd9, TimeOut)
-
-	// external traffic with static IPs
-	// Google DNS
-	cmd10 := "kubectl exec --namespace=" + ns + " " + podName + " -- wget --spider --timeout 3 https://8.8.8.8"
-	execCommandAssertExitCode(t, cmd10, Success)
-
-	// Cloudflare DNS
-	cmd11 := "kubectl exec --namespace=" + ns + " " + podName + " -- wget --spider --timeout 3 1.1.1.1"
-	execCommandAssertExitCode(t, cmd11, Success)
-
-	// external traffic with domain names
-	cmd12 := "kubectl exec --namespace=" + ns + " " + podName + " -- wget --spider --timeout 3 www.google.de"
-	execCommandAssertExitCode(t, cmd12, Success)
-
-	cmd13 := "kubectl exec --namespace=" + ns + " " + podName + " -- wget --spider --timeout 3 www.sap.com"
-	execCommandAssertExitCode(t, cmd13, Success)
+	networkPolicyTestCases(t, podName, ns, 1)
 
 	err = f.KubeClientset.CoreV1().Pods(ns).Delete(createdPod.ObjectMeta.Name, &metav1.DeleteOptions{})
 	if err != nil {
 		t.Fatal("pod could not be deleted")
 	}
+}
 
+func TestNetworkPolicyLevel1(t *testing.T) {
+	testNetworkPolicyLevel(t, "karydia-network-policy-1", 1)
+}
+
+func TestNetworkPolicyLevel2(t *testing.T) {
+	testNetworkPolicyLevel(t, "karydia-network-policy-2", 2)
+}
+
+func TestNetworkPolicyLevel3(t *testing.T) {
+	testNetworkPolicyLevel(t, "karydia-network-policy-3", 3)
+}
+
+func int32Ptr(i int32) *int32 { return &i }
+
+func getDeploymentDescription(ns string) *appsv1.Deployment {
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "network-policy-deployment",
+			Namespace: ns,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: int32Ptr(1),
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"app": "nginx",
+				},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						"app": "nginx",
+					},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "nginx",
+							Image: "nginx",
+							Ports: []corev1.ContainerPort{
+								{
+									Name:          "http",
+									Protocol:      corev1.ProtocolTCP,
+									ContainerPort: 80,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func getServiceDescription(ns string) *corev1.Service {
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "network-policy-service",
+			Labels: map[string]string{
+				"app": "nginx",
+			},
+			Namespace: ns,
+		},
+		Spec: corev1.ServiceSpec{
+			Ports: []corev1.ServicePort{
+				{
+					Name:       "foo",
+					Port:       80,
+					Protocol:   "TCP",
+					TargetPort: intstr.FromInt(80),
+				},
+			},
+			Selector: map[string]string{
+				"app": "nginx",
+			},
+		},
+	}
+}
+
+func testServiceDeploymentCommunication(t *testing.T, level int, ns string, clusterIP string, port int32) {
+
+	if level == 3 {
+		namespace, err := f.CreateTestNamespace()
+		if err != nil {
+			t.Fatalf("failed to create test namespace: %v", err)
+		}
+		ns = namespace.ObjectMeta.Name
+	}
+
+	podName := "networkpolicy-service-deployment-test"
+	pod := getPodDescription(ns, podName)
+	createdPod, err := f.KubeClientset.CoreV1().Pods(ns).Create(pod)
+	if err != nil {
+		t.Fatalf("Failed to create pod: " + err.Error())
+	}
+	timeout := 2 * time.Minute
+	if err := f.WaitPodRunning(ns, podName, timeout); err != nil {
+		t.Fatalf("pod never reached state running" + err.Error())
+	}
+
+	expectedExitCode := Success
+	if level == 3 {
+		expectedExitCode = TimeOut
+	}
+
+	cmd1 := "kubectl exec --namespace=" + ns + " " + podName + " -- wget --spider --timeout 1 " + clusterIP + ":" + fmt.Sprint(port)
+	execCommandAssertExitCode(t, cmd1, expectedExitCode)
+
+	err = f.KubeClientset.CoreV1().Pods(ns).Delete(createdPod.ObjectMeta.Name, &metav1.DeleteOptions{})
+	if err != nil {
+		t.Fatal("pod could not be deleted")
+	}
+}
+
+func testServiceDeployment(t *testing.T, level int) {
+
+	var namespace *corev1.Namespace
+	var err error
+
+	namespace, err = f.CreateTestNamespaceWithAnnotation(map[string]string{
+		"karydia.gardener.cloud/podSecurityContext": "none",
+	})
+	if err != nil {
+		t.Fatalf("failed to create test namespace: %v", err)
+	}
+	if level == 2 {
+		namespace.SetAnnotations(map[string]string{
+			"karydia.gardener.cloud/networkPolicy": "network-policy-l2",
+		})
+	} else if level == 3 {
+		namespace.SetAnnotations(map[string]string{
+			"karydia.gardener.cloud/networkPolicy": "network-policy-l3",
+		})
+	}
+	ns := namespace.ObjectMeta.Name
+
+	deployment := getDeploymentDescription(ns)
+	createdDeployment, err2 := f.KubeClientset.AppsV1().Deployments(ns).Create(deployment)
+	if err2 != nil {
+		t.Fatalf("failed to create deployment: %v", err2)
+	}
+	deploymentName := createdDeployment.ObjectMeta.Name
+
+	service := getServiceDescription(ns)
+	createdService, err3 := f.KubeClientset.CoreV1().Services(ns).Create(service)
+	if err3 != nil {
+		t.Fatalf("Failed to create service: " + err3.Error())
+	}
+	serviceName := createdService.ObjectMeta.Name
+
+	testServiceDeploymentCommunication(t, level, ns, createdService.Spec.ClusterIP, createdService.Spec.Ports[0].Port)
+
+	err4 := f.KubeClientset.CoreV1().Services(ns).Delete(serviceName, &metav1.DeleteOptions{})
+	if err4 != nil {
+		t.Fatal("service could not be deleted" + err4.Error())
+	}
+
+	err5 := f.KubeClientset.AppsV1().Deployments(ns).Delete(deploymentName, &metav1.DeleteOptions{})
+	if err5 != nil {
+		t.Fatalf("Failed to delete: " + err5.Error())
+	}
+
+}
+
+func TestServiceDeploymentLevel2(t *testing.T) {
+	testServiceDeployment(t, 2)
+}
+
+func TestServiceDeploymentLevel3(t *testing.T) {
+	testServiceDeployment(t, 3)
 }
